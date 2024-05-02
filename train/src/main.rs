@@ -2,15 +2,6 @@ use candle::{DType, Device, Error, IndexOp, Module, Result, Tensor};
 use candle_nn::{embedding, ops::softmax_last_dim, Embedding, Optimizer, VarBuilder, VarMap};
 use rand::{distributions::Distribution, Rng, SeedableRng};
 
-fn sample_multinomial(xs: &Tensor) -> Result<u32> {
-    let w = &xs.to_vec2::<f32>()?[0];
-    // println!("w {w:#?}");
-    let distr = rand::distributions::WeightedIndex::new(w).map_err(Error::wrap)?;
-    let mut rng = rand::rngs::StdRng::seed_from_u64(1345425245u64);
-    let next_token = distr.sample(&mut rng) as u32;
-    Ok(next_token)
-}
-
 struct BigramLanguageModel {
     token_embedding_table: Embedding,
 }
@@ -35,15 +26,18 @@ impl BigramLanguageModel {
     }
 
     fn generate(&self, xs: &mut Tensor, max_new_tokens: usize, device: &Device) -> Result<Tensor> {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1345425245u64);
         for _ in 0..max_new_tokens {
             let logits = xs.apply(self)?;
             let logits = logits.i((.., logits.dim(1)? - 1, ..))?;
-            // println!("logits {logits:?}");
-            // let sum = logits.sum_all()?.to_vec0::<f32>()?;
-            // println!("sum {sum}");
             let p = softmax_last_dim(&logits)?;
-            let xs_next = sample_multinomial(&p)?;
-            let xs_next = Tensor::full(xs_next, 1, device)?.unsqueeze(0)?;
+
+            // multinomial sampling
+            let w = &p.to_vec2::<f32>()?[0];
+            let distr = rand::distributions::WeightedIndex::new(w).map_err(Error::wrap)?;
+            let next_token = distr.sample(&mut rng) as u32;
+
+            let xs_next = Tensor::full(next_token, 1, device)?.unsqueeze(0)?;
             *xs = Tensor::cat(&[xs.clone(), xs_next.clone()], 1)?;
         }
         // println!("xs {xs}");
@@ -161,7 +155,7 @@ fn main() -> Result<()> {
 
     // train the model
     let mut optimizer = candle_nn::AdamW::new_lr(varmap.all_vars(), 1e-3)?;
-    for _ in 0..100000 {
+    for _ in 0..10000 {
         let (xb, yb) = get_batch(train);
         let xb = Tensor::new(&xb, device)?;
         let yb = Tensor::new(&yb, device)?;
