@@ -39,7 +39,7 @@ impl BigramLanguageModel {
             let logits = xs.apply(self)?;
             let logits = logits.i((.., logits.dim(1)? - 1, ..))?;
             // println!("logits {logits:?}");
-            let sum = logits.sum_all()?.to_vec0::<f32>()?;
+            // let sum = logits.sum_all()?.to_vec0::<f32>()?;
             // println!("sum {sum}");
             let p = softmax_last_dim(&logits)?;
             let xs_next = sample_multinomial(&p)?;
@@ -168,30 +168,6 @@ fn main() -> Result<()> {
         let (_, loss) = m.forward_with_loss(&xb, &yb)?;
         optimizer.backward_step(&loss)?;
     }
-
-    // run forward pass on the trained model
-    let mut xs = Tensor::zeros((1, 1), DType::U32, device)?;
-    let g = m.generate(&mut xs, 100, device)?;
-    println!("generated {g:#?}");
-    let g = g.to_vec2::<u32>()?[0].clone();
-    let g = decode(&g, &reverse_map);
-    println!("decoded {g:#?}");
-
-    // run forward pass on the trained model
-    let mut xs = Tensor::zeros((1, 1), DType::U32, device)?;
-    let g = m.generate(&mut xs, 100, device)?;
-    println!("generated {g:#?}");
-    let g = g.to_vec2::<u32>()?[0].clone();
-    let g = decode(&g, &reverse_map);
-    println!("decoded {g:#?}");
-
-    // run forward pass on the trained model
-    let mut xs = Tensor::zeros((1, 1), DType::U32, device)?;
-    let g = m.generate(&mut xs, 100, device)?;
-    println!("generated {g:#?}");
-    let g = g.to_vec2::<u32>()?[0].clone();
-    let g = decode(&g, &reverse_map);
-    println!("decoded {g:#?}");
 
     // run forward pass on the trained model
     let mut xs = Tensor::zeros((1, 1), DType::U32, device)?;
