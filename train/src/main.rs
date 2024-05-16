@@ -6,11 +6,11 @@ use rand::{distributions::Distribution, Rng, SeedableRng};
 
 const BLOCK_SIZE: usize = 8;
 const BATCH_SIZE: usize = 32;
-const SEED: u64 = 0;
+const SEED: u64 = 1337;
 const MAX_ITERS: usize = 3000;
 const EVAL_INTERVAL: usize = 300;
-const EVAL_ITERS: usize = 200;
-const LEARNING_RATE: f64 = 1e-2;
+const EVAL_ITERS: usize = 400;
+const LEARNING_RATE: f64 = 1e-3;
 
 struct BigramLanguageModel {
     token_embedding_table: Embedding,
@@ -88,13 +88,11 @@ fn get_batch(
     let mut xx = [[0u32; BLOCK_SIZE]; BATCH_SIZE];
     let mut yy = [[0u32; BLOCK_SIZE]; BATCH_SIZE];
 
-    for batch_index in 0..BATCH_SIZE {
+    for (_batch_index, (x, y)) in xx.iter_mut().zip(yy.iter_mut()).enumerate() {
         let start = rng.gen_range(0..data.len() - BLOCK_SIZE);
 
-        for block_index in 0..BLOCK_SIZE {
-            xx[batch_index][block_index] = data[start + block_index];
-            yy[batch_index][block_index] = data[start + block_index + 1];
-        }
+        x.copy_from_slice(&data[start..start + BLOCK_SIZE]);
+        y.copy_from_slice(&data[start + 1..start + BLOCK_SIZE + 1]);
     }
 
     (xx, yy)
@@ -106,18 +104,29 @@ fn estimate_loss(
     device: &Device,
 ) -> Result<(f32, f32)> {
     let (train, val) = data;
+
+    fn process_batch(
+        model: &BigramLanguageModel,
+        train_data: &[u32],
+        val_data: &[u32],
+        device: &Device,
+    ) -> Result<(f32, f32)> {
+        let (xb_train, yb_train) = get_batch(train_data);
+        let (xb_val, yb_val) = get_batch(val_data);
+
+        let xb_train = Tensor::new(&xb_train, device)?;
+        let yb_train = Tensor::new(&yb_train, device)?;
+        let xb_val = Tensor::new(&xb_val, device)?;
+        let yb_val = Tensor::new(&yb_val, device)?;
+
+        let (_, train_loss) = model.forward_with_loss(&xb_train, &yb_train)?;
+        let (_, val_loss) = model.forward_with_loss(&xb_val, &yb_val)?;
+
+        Ok((train_loss.to_scalar::<f32>()?, val_loss.to_scalar::<f32>()?))
+    }
+
     let train_losses: Vec<(f32, f32)> = (0..EVAL_ITERS)
-        .map(|_| {
-            let (xb_train, yb_train) = get_batch(train);
-            let (xb_val, yb_val) = get_batch(val);
-            let xb_train = Tensor::new(&xb_train, device)?;
-            let yb_train = Tensor::new(&yb_train, device)?;
-            let xb_val = Tensor::new(&xb_val, device)?;
-            let yb_val = Tensor::new(&yb_val, device)?;
-            let (_, train_loss) = model.forward_with_loss(&xb_train, &yb_train)?;
-            let (_, val_loss) = model.forward_with_loss(&xb_val, &yb_val)?;
-            Ok((train_loss.to_scalar::<f32>()?, val_loss.to_scalar::<f32>()?))
-        })
+        .map(|_| process_batch(model, train, val, device))
         .collect::<Result<Vec<(f32, f32)>>>()?;
 
     let train_loss_mean = Tensor::new(
@@ -129,6 +138,7 @@ fn estimate_loss(
     )?
     .mean(D::Minus1)?
     .to_scalar::<f32>()?;
+
     let val_loss_mean = Tensor::new(
         train_losses
             .iter()
@@ -192,10 +202,22 @@ fn main() -> Result<()> {
 
     // train the model
     let mut optimizer = candle_nn::AdamW::new_lr(varmap.all_vars(), LEARNING_RATE)?;
+    let mut best_val_loss = f32::INFINITY;
+    let mut patience = 10; // number of epochs to wait for improvement;
     for iter in 0..MAX_ITERS {
         if iter % EVAL_INTERVAL == 0 {
             let (train_loss, val_loss) = estimate_loss((train, valid), &m, device)?;
             println!("iter: {iter}, train loss: {train_loss}, val loss: {val_loss}");
+            if val_loss < best_val_loss {
+                best_val_loss = val_loss;
+                patience = 10; // reset patience
+            } else {
+                patience -= 1;
+                if patience == 0 {
+                    println!("Early stopping at iter: {iter}");
+                    break;
+                }
+            }
         }
 
         let (xb, yb) = get_batch(train);
