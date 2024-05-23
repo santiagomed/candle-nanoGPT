@@ -1,15 +1,15 @@
-use std::collections::HashMap;
-
 use candle::{DType, Device, Error, IndexOp, Module, Result, Tensor, D};
-use candle_nn::{embedding, ops::softmax_last_dim, Embedding, Optimizer, VarBuilder, VarMap};
+use candle_nn::{
+    embedding, loss::cross_entropy, ops::softmax_last_dim, Embedding, Optimizer, VarBuilder, VarMap,
+};
 use rand::{distributions::Distribution, Rng, SeedableRng};
 
-const BLOCK_SIZE: usize = 8;
 const BATCH_SIZE: usize = 32;
-const SEED: u64 = 1337;
+const BLOCK_SIZE: usize = 8;
+const SEED: u64 = 13345457;
 const MAX_ITERS: usize = 3000;
 const EVAL_INTERVAL: usize = 300;
-const EVAL_ITERS: usize = 400;
+const EVAL_ITERS: usize = 200;
 const LEARNING_RATE: f64 = 1e-3;
 
 struct BigramLanguageModel {
@@ -30,15 +30,17 @@ impl BigramLanguageModel {
         let logits = logits.reshape((b * t, c))?;
         let targets = targets.reshape(b * t)?;
 
-        let loss = candle_nn::loss::cross_entropy(&logits, &targets)?;
+        let loss = cross_entropy(&logits, &targets)?;
 
         Ok((logits, loss))
     }
 
-    fn generate(&self, xs: &mut Tensor, max_new_tokens: usize, device: &Device) -> Result<Tensor> {
-        let mut rng = rand::rngs::StdRng::seed_from_u64(1345425245u64);
+    fn generate(&self, xs: &Tensor, max_new_tokens: usize, device: &Device) -> Result<Tensor> {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(SEED);
+        let mut generated = xs.clone();
+
         for _ in 0..max_new_tokens {
-            let logits = xs.apply(self)?;
+            let logits = generated.apply(self)?;
             let logits = logits.i((.., logits.dim(1)? - 1, ..))?;
             let p = softmax_last_dim(&logits)?;
 
@@ -48,10 +50,10 @@ impl BigramLanguageModel {
             let next_token = distr.sample(&mut rng) as u32;
 
             let xs_next = Tensor::full(next_token, 1, device)?.unsqueeze(0)?;
-            *xs = Tensor::cat(&[xs.clone(), xs_next.clone()], 1)?;
+            generated = Tensor::cat(&[generated, xs_next], 1)?;
         }
-        // println!("xs {xs}");
-        Ok(xs.clone())
+
+        Ok(generated)
     }
 }
 
@@ -62,37 +64,24 @@ impl Module for BigramLanguageModel {
 }
 
 fn encode(s: &str, map: &std::collections::BTreeMap<char, u32>) -> Vec<u32> {
-    let mut encoded = Vec::new();
-    for c in s.chars() {
-        encoded.push(*map.get(&c).unwrap());
-    }
-    encoded
+    s.chars().map(|c| *map.get(&c).unwrap()).collect()
 }
 
 fn decode(i: &[u32], reverse_map: &std::collections::BTreeMap<u32, char>) -> String {
-    let mut decoded = String::new();
-    for c in i {
-        decoded.push(*reverse_map.get(c).unwrap());
-    }
-    decoded
+    i.iter().map(|c| *reverse_map.get(c).unwrap()).collect()
 }
 
-fn get_batch(
-    data: &[u32],
-) -> (
-    [[u32; BLOCK_SIZE]; BATCH_SIZE],
-    [[u32; BLOCK_SIZE]; BATCH_SIZE],
-) {
+fn get_batch(data: &[u32], batch_size: usize, block_size: usize) -> (Vec<Vec<u32>>, Vec<Vec<u32>>) {
     let mut rng = rand::rngs::StdRng::seed_from_u64(SEED);
 
-    let mut xx = [[0u32; BLOCK_SIZE]; BATCH_SIZE];
-    let mut yy = [[0u32; BLOCK_SIZE]; BATCH_SIZE];
+    let mut xx = vec![vec![0u32; block_size]; batch_size];
+    let mut yy = vec![vec![0u32; block_size]; batch_size];
 
     for (_batch_index, (x, y)) in xx.iter_mut().zip(yy.iter_mut()).enumerate() {
-        let start = rng.gen_range(0..data.len() - BLOCK_SIZE);
+        let start = rng.gen_range(0..data.len() - block_size);
 
-        x.copy_from_slice(&data[start..start + BLOCK_SIZE]);
-        y.copy_from_slice(&data[start + 1..start + BLOCK_SIZE + 1]);
+        x.copy_from_slice(&data[start..start + block_size]);
+        y.copy_from_slice(&data[start + 1..start + block_size + 1]);
     }
 
     (xx, yy)
@@ -111,13 +100,13 @@ fn estimate_loss(
         val_data: &[u32],
         device: &Device,
     ) -> Result<(f32, f32)> {
-        let (xb_train, yb_train) = get_batch(train_data);
-        let (xb_val, yb_val) = get_batch(val_data);
+        let (xb_train, yb_train) = get_batch(train_data, BATCH_SIZE, BLOCK_SIZE);
+        let (xb_val, yb_val) = get_batch(val_data, BATCH_SIZE, BLOCK_SIZE);
 
-        let xb_train = Tensor::new(&xb_train, device)?;
-        let yb_train = Tensor::new(&yb_train, device)?;
-        let xb_val = Tensor::new(&xb_val, device)?;
-        let yb_val = Tensor::new(&yb_val, device)?;
+        let xb_train = Tensor::new(xb_train, device)?;
+        let yb_train = Tensor::new(yb_train, device)?;
+        let xb_val = Tensor::new(xb_val, device)?;
+        let yb_val = Tensor::new(yb_val, device)?;
 
         let (_, train_loss) = model.forward_with_loss(&xb_train, &yb_train)?;
         let (_, val_loss) = model.forward_with_loss(&xb_val, &yb_val)?;
@@ -180,13 +169,29 @@ fn main() -> Result<()> {
     }
 
     // encode the text using the mapping
-    let encoded = encode(&file, &map);
+    let data = encode(&file, &map);
 
     // split the encoded text into training and validation sets
-    let n = (0.9 * encoded.len() as f32) as usize;
-    let train = &encoded[0..n];
-    let valid = &encoded[n..];
-    assert_eq!(encoded.len(), train.len() + valid.len());
+    let n = (data.len() * 9) / 10;
+    let (train, valid) = data.split_at(n);
+    let train = train.to_vec();
+    let valid = valid.to_vec();
+
+    assert_eq!(data.len(), train.len() + valid.len());
+
+    // get train data
+    let (batch_size, block_size) = (4, 8);
+    let (xb, yb) = get_batch(&train, batch_size, block_size);
+    println!("inputs: {xb:?}");
+    println!("targets: {yb:?}");
+
+    for b in 0..batch_size {
+        for t in 0..block_size {
+            let context = &xb[b][..t + 1];
+            let target = yb[b][t];
+            println!("when input is {context:?} the target: {target}");
+        }
+    }
 
     // create a new BigramLanguageModel
     let varmap = VarMap::new();
@@ -194,35 +199,33 @@ fn main() -> Result<()> {
     let m = BigramLanguageModel::new(vocab_size, vb)?;
 
     // run forward pass on the untrained model
-    let mut xs = Tensor::zeros((1, 1), DType::U32, device)?;
-    let g = m.generate(&mut xs, 100, device)?;
+    let (logits, loss) = m.forward_with_loss(
+        &Tensor::new(xb.clone(), device)?,
+        &Tensor::new(yb.clone(), device)?,
+    )?;
+
+    println!("logits: {logits}");
+    println!("loss: {loss}");
+
+    let (train_loss, val_loss) = estimate_loss((&train, &valid), &m, device)?;
+    println!("train loss: {train_loss}, val loss: {val_loss}");
+    let xs = Tensor::zeros((1, 1), DType::U32, device)?;
+    let g = m.generate(&xs, 100, device)?;
     println!("generated {g:#?}");
     let g = decode(&g.to_vec2::<u32>()?[0], &reverse_map);
     println!("decoded {g:#?}");
 
     // train the model
     let mut optimizer = candle_nn::AdamW::new_lr(varmap.all_vars(), LEARNING_RATE)?;
-    let mut best_val_loss = f32::INFINITY;
-    let mut patience = 10; // number of epochs to wait for improvement;
     for iter in 0..MAX_ITERS {
         if iter % EVAL_INTERVAL == 0 {
-            let (train_loss, val_loss) = estimate_loss((train, valid), &m, device)?;
+            let (train_loss, val_loss) = estimate_loss((&train, &valid), &m, device)?;
             println!("iter: {iter}, train loss: {train_loss}, val loss: {val_loss}");
-            if val_loss < best_val_loss {
-                best_val_loss = val_loss;
-                patience = 10; // reset patience
-            } else {
-                patience -= 1;
-                if patience == 0 {
-                    println!("Early stopping at iter: {iter}");
-                    break;
-                }
-            }
         }
 
-        let (xb, yb) = get_batch(train);
-        let xb = Tensor::new(&xb, device)?;
-        let yb = Tensor::new(&yb, device)?;
+        let (xb, yb) = get_batch(&train, BATCH_SIZE, BLOCK_SIZE);
+        let xb = Tensor::new(xb, device)?;
+        let yb = Tensor::new(yb, device)?;
         let (_, loss) = m.forward_with_loss(&xb, &yb)?;
         optimizer.backward_step(&loss)?;
     }
@@ -231,8 +234,7 @@ fn main() -> Result<()> {
     let mut xs = Tensor::zeros((1, 1), DType::U32, device)?;
     let g = m.generate(&mut xs, 500, device)?;
     println!("generated {g:#?}");
-    let g = g.to_vec2::<u32>()?[0].clone();
-    let g = decode(&g, &reverse_map);
+    let g = decode(&g.to_vec2::<u32>()?[0], &reverse_map);
     print!("decoded {g}");
 
     Ok(())

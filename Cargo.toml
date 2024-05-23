@@ -1,9 +1,26 @@
-[workspace]
-members = [ "train",
-    "candle-nanogpt",
-]
+[package]
+name = "ng-tutorial"
+version = "0.1.0"
+edition = "2021"
 
-[workspace.dependencies]
+[lib]
+name = "utils"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bigram"
+path = "src/bigram.rs"
+
+[[bin]]
+name = "attention"
+path = "src/self_attention_trick.rs"
+
+[[bin]]
+name = "model"
+path = "src/model.rs"
+
+[dependencies]
+anyhow = "1.0.82"
 candle = { git = "https://github.com/huggingface/candle", package = "candle-core", features = ["metal"] }
 candle-nn = { git = "https://github.com/huggingface/candle", package = "candle-nn", features = ["metal"] }
 rand = "0.8.5"
