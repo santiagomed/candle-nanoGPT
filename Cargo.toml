@@ -19,6 +19,10 @@ path = "src/self_attention_trick.rs"
 name = "model"
 path = "src/model.rs"
 
+[[bin]]
+name = "modelv2"
+path = "src/modelv2.rs"
+
 [dependencies]
 anyhow = "1.0.82"
 candle = { git = "https://github.com/huggingface/candle", package = "candle-core", features = ["metal"] }

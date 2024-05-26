@@ -1,16 +1,17 @@
 use candle::{DType, Device, Error, IndexOp, Module, Result, Tensor, D};
 use candle_nn::{
-    embedding, loss::cross_entropy, ops::softmax_last_dim, Embedding, Optimizer, VarBuilder, VarMap,
+    loss::cross_entropy, ops::softmax_last_dim, Embedding, Optimizer, VarBuilder, VarMap,
 };
-use rand::{distributions::Distribution, Rng, SeedableRng};
+use rand::{rngs::StdRng, distributions::Distribution, Rng, SeedableRng};
+use utils::embedding;
 
 const BATCH_SIZE: usize = 32;
 const BLOCK_SIZE: usize = 8;
-const SEED: u64 = 13345457;
+const SEED: u64 = 1337;
 const MAX_ITERS: usize = 3000;
 const EVAL_INTERVAL: usize = 300;
 const EVAL_ITERS: usize = 200;
-const LEARNING_RATE: f64 = 1e-3;
+const LEARNING_RATE: f64 = 1e-2;
 
 struct BigramLanguageModel {
     token_embedding_table: Embedding,
@@ -35,8 +36,7 @@ impl BigramLanguageModel {
         Ok((logits, loss))
     }
 
-    fn generate(&self, xs: &Tensor, max_new_tokens: usize, device: &Device) -> Result<Tensor> {
-        let mut rng = rand::rngs::StdRng::seed_from_u64(SEED);
+    fn generate(&self, xs: &Tensor, max_new_tokens: usize, device: &Device, rng: &mut StdRng) -> Result<Tensor> {
         let mut generated = xs.clone();
 
         for _ in 0..max_new_tokens {
@@ -47,7 +47,7 @@ impl BigramLanguageModel {
             // multinomial sampling
             let w = &p.to_vec2::<f32>()?[0];
             let distr = rand::distributions::WeightedIndex::new(w).map_err(Error::wrap)?;
-            let next_token = distr.sample(&mut rng) as u32;
+            let next_token = distr.sample(rng) as u32;
 
             let xs_next = Tensor::full(next_token, 1, device)?.unsqueeze(0)?;
             generated = Tensor::cat(&[generated, xs_next], 1)?;
@@ -71,9 +71,7 @@ fn decode(i: &[u32], reverse_map: &std::collections::BTreeMap<u32, char>) -> Str
     i.iter().map(|c| *reverse_map.get(c).unwrap()).collect()
 }
 
-fn get_batch(data: &[u32], batch_size: usize, block_size: usize) -> (Vec<Vec<u32>>, Vec<Vec<u32>>) {
-    let mut rng = rand::rngs::StdRng::seed_from_u64(SEED);
-
+fn get_batch(data: &[u32], batch_size: usize, block_size: usize, rng: &mut StdRng) -> (Vec<Vec<u32>>, Vec<Vec<u32>>) {
     let mut xx = vec![vec![0u32; block_size]; batch_size];
     let mut yy = vec![vec![0u32; block_size]; batch_size];
 
@@ -90,6 +88,7 @@ fn get_batch(data: &[u32], batch_size: usize, block_size: usize) -> (Vec<Vec<u32
 fn estimate_loss(
     data: (&[u32], &[u32]),
     model: &BigramLanguageModel,
+    rng: &mut StdRng,
     device: &Device,
 ) -> Result<(f32, f32)> {
     let (train, val) = data;
@@ -98,10 +97,11 @@ fn estimate_loss(
         model: &BigramLanguageModel,
         train_data: &[u32],
         val_data: &[u32],
+        rng: &mut StdRng,
         device: &Device,
     ) -> Result<(f32, f32)> {
-        let (xb_train, yb_train) = get_batch(train_data, BATCH_SIZE, BLOCK_SIZE);
-        let (xb_val, yb_val) = get_batch(val_data, BATCH_SIZE, BLOCK_SIZE);
+        let (xb_train, yb_train) = get_batch(train_data, BATCH_SIZE, BLOCK_SIZE, rng);
+        let (xb_val, yb_val) = get_batch(val_data, BATCH_SIZE, BLOCK_SIZE, rng);
 
         let xb_train = Tensor::new(xb_train, device)?;
         let yb_train = Tensor::new(yb_train, device)?;
@@ -115,7 +115,7 @@ fn estimate_loss(
     }
 
     let train_losses: Vec<(f32, f32)> = (0..EVAL_ITERS)
-        .map(|_| process_batch(model, train, val, device))
+        .map(|_| process_batch(model, train, val, rng, device))
         .collect::<Result<Vec<(f32, f32)>>>()?;
 
     let train_loss_mean = Tensor::new(
@@ -179,9 +179,12 @@ fn main() -> Result<()> {
 
     assert_eq!(data.len(), train.len() + valid.len());
 
+    // set the rng seed
+    let mut rng = StdRng::seed_from_u64(SEED);
+
     // get train data
     let (batch_size, block_size) = (4, 8);
-    let (xb, yb) = get_batch(&train, batch_size, block_size);
+    let (xb, yb) = get_batch(&train, batch_size, block_size, &mut rng);
     println!("inputs: {xb:?}");
     println!("targets: {yb:?}");
 
@@ -207,10 +210,10 @@ fn main() -> Result<()> {
     println!("logits: {logits}");
     println!("loss: {loss}");
 
-    let (train_loss, val_loss) = estimate_loss((&train, &valid), &m, device)?;
+    let (train_loss, val_loss) = estimate_loss((&train, &valid), &m, &mut rng, device)?;
     println!("train loss: {train_loss}, val loss: {val_loss}");
     let xs = Tensor::zeros((1, 1), DType::U32, device)?;
-    let g = m.generate(&xs, 100, device)?;
+    let g = m.generate(&xs, 100, device, &mut rng)?;
     println!("generated {g:#?}");
     let g = decode(&g.to_vec2::<u32>()?[0], &reverse_map);
     println!("decoded {g:#?}");
@@ -219,11 +222,11 @@ fn main() -> Result<()> {
     let mut optimizer = candle_nn::AdamW::new_lr(varmap.all_vars(), LEARNING_RATE)?;
     for iter in 0..MAX_ITERS {
         if iter % EVAL_INTERVAL == 0 {
-            let (train_loss, val_loss) = estimate_loss((&train, &valid), &m, device)?;
+            let (train_loss, val_loss) = estimate_loss((&train, &valid), &m, &mut rng, device)?;
             println!("iter: {iter}, train loss: {train_loss}, val loss: {val_loss}");
         }
 
-        let (xb, yb) = get_batch(&train, BATCH_SIZE, BLOCK_SIZE);
+        let (xb, yb) = get_batch(&train, BATCH_SIZE, BLOCK_SIZE, &mut rng);
         let xb = Tensor::new(xb, device)?;
         let yb = Tensor::new(yb, device)?;
         let (_, loss) = m.forward_with_loss(&xb, &yb)?;
@@ -232,7 +235,7 @@ fn main() -> Result<()> {
 
     // run forward pass on the trained model
     let mut xs = Tensor::zeros((1, 1), DType::U32, device)?;
-    let g = m.generate(&mut xs, 500, device)?;
+    let g = m.generate(&mut xs, 500, device, &mut rng)?;
     println!("generated {g:#?}");
     let g = decode(&g.to_vec2::<u32>()?[0], &reverse_map);
     print!("decoded {g}");
