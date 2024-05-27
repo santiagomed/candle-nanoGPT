@@ -1,0 +1,89 @@
+okay so I created a new Google collab uh
+00:07:55.500
+jupyter notebook here and this will
+00:07:57.780
+allow me to later easily share this code
+00:07:59.639
+that we're going to develop together
+00:08:00.720
+with you so you can follow along so this
+00:08:03.120
+will be in the video description later
+00:08:05.060
+now here I've just done some
+00:08:07.620
+preliminaries I downloaded the data set
+00:08:09.720
+the tiny Shakespeare data set at this
+00:08:11.220
+URL and you can see that it's about a
+00:08:12.960
+one megabyte file
+00:08:14.639
+then here I open the input.txt file and
+00:08:17.460
+just read in all the text as a string
+00:08:19.379
+and we see that we are working with 1
+00:08:21.360
+million characters roughly
+00:08:23.400
+and the first 1000 characters if we just
+00:08:25.319
+print them out are basically what you
+00:08:27.060
+would expect this is the first 1000
+00:08:28.919
+characters of the tiny Shakespeare data
+00:08:31.259
+set roughly up to here
+00:08:33.659
+so so far so good next we're going to
+00:08:36.120
+take this text and the text is a
+00:08:38.580
+sequence of characters in Python so when
+00:08:40.620
+I call the set Constructor on it I'm
+00:08:43.080
+just going to get the set of all the
+00:08:45.660
+characters that occur in this text
+00:08:48.180
+and then I call list on that to create a
+00:08:51.480
+list of those characters instead of just
+00:08:52.800
+a set so that I have an ordering an
+00:08:54.600
+arbitrary ordering
+00:08:56.160
+and then I sort that
+00:08:58.200
+so basically we get just all the
+00:08:59.820
+characters that occur in the entire data
+00:09:01.440
+set and they're sorted now the number of
+00:09:03.660
+them is going to be our vocabulary size
+00:09:05.399
+these are the possible elements of our
+00:09:07.800
+sequences and we see that when I print
+00:09:10.080
+here the characters
+00:09:12.120
+there's 65 of them in total there's a
+00:09:14.820
+space character and then all kinds of
+00:09:16.560
+special characters
+00:09:18.120
+and then capitals and lowercase letters
+00:09:21.180
+so that's our vocabulary and that's the
+00:09:23.100
+sort of like possible characters that
+00:09:25.740
+the model can see or emit
